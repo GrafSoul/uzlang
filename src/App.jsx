@@ -240,7 +240,7 @@ function StudyCard({ item, reveal, canSpeak, onSpeakText, isWord = false }) {
             <Typography variant="h5">{item.uz}</Typography>
             {canSpeak ? (
               <Tooltip title="Озвучить">
-                <IconButton color="primary" onClick={() => onSpeakText(item.uz)}>
+                <IconButton color="primary" onClick={() => onSpeakText(item.reading || item.uz)}>
                   <VolumeUpRoundedIcon />
                 </IconButton>
               </Tooltip>
@@ -261,7 +261,7 @@ function StudyCard({ item, reveal, canSpeak, onSpeakText, isWord = false }) {
                     <IconButton
                       size="small"
                       color="primary"
-                      onClick={() => onSpeakText(item.exampleUz)}
+                      onClick={() => onSpeakText(item.exampleReading || item.exampleUz)}
                     >
                       <VolumeUpRoundedIcon fontSize="small" />
                     </IconButton>
@@ -300,7 +300,7 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
 
   const [lessonCards, setLessonCards] = useState([]);
   const [lessonIndex, setLessonIndex] = useState(0);
-  const [reveal, setReveal] = useState(false);
+  const [showTranslation, setShowTranslation] = useState(false);
   const [dueCards, setDueCards] = useState([]);
   const [reviewIndex, setReviewIndex] = useState(0);
   const [phraseQuizItems, setPhraseQuizItems] = useState([]);
@@ -362,7 +362,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
 
   const [wordCards, setWordCards] = useState([]);
   const [wordIndex, setWordIndex] = useState(0);
-  const [wordReveal, setWordReveal] = useState(false);
   const [dueWords, setDueWords] = useState([]);
   const [dueWordIndex, setDueWordIndex] = useState(0);
   const [wordQuizItems, setWordQuizItems] = useState([]);
@@ -543,7 +542,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     const cards = await getCardsByTopic(id);
     setLessonCards(cards);
     setLessonIndex(0);
-    setReveal(false);
   }
 
   async function startPhraseQuiz(id) {
@@ -573,7 +571,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     const words = await getWordsByLevel(level, 1000);
     setWordCards(words);
     setWordIndex(0);
-    setWordReveal(false);
   }
 
   async function startWordQuiz(level) {
@@ -1007,14 +1004,14 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                       <Stack spacing={2}>
                         <Stack direction="row" justifyContent="space-between" alignItems="center">
                           <Chip label={`${lessonIndex + 1} / ${lessonCards.length || 1}`} />
-                          <Button onClick={() => setReveal((v) => !v)}>
-                            {reveal ? 'Скрыть перевод' : 'Показать перевод'}
+                          <Button onClick={() => setShowTranslation((v) => !v)}>
+                            {showTranslation ? 'Скрыть перевод' : 'Показать перевод'}
                           </Button>
                         </Stack>
 
                         <StudyCard
                           item={activeLessonCard}
-                          reveal={reveal}
+                          reveal={showTranslation}
                           canSpeak={canSpeak}
                           onSpeakText={speakText}
                         />
@@ -1025,7 +1022,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                             disabled={lessonIndex === 0}
                             onClick={() => {
                               setLessonIndex((i) => Math.max(0, i - 1));
-                              setReveal(false);
                             }}
                           >
                             Назад
@@ -1039,7 +1035,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                                   ? 0
                                   : Math.min(lessonCards.length - 1, i + 1)
                               );
-                              setReveal(false);
                             }}
                           >
                             Дальше
@@ -1280,14 +1275,14 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                   <Stack spacing={2}>
                     <Stack direction="row" justifyContent="space-between" alignItems="center">
                       <Chip label={`${wordIndex + 1} / ${wordCards.length || 1}`} />
-                      <Button onClick={() => setWordReveal((v) => !v)}>
-                        {wordReveal ? 'Скрыть перевод' : 'Показать перевод'}
+                      <Button onClick={() => setShowTranslation((v) => !v)}>
+                        {showTranslation ? 'Скрыть перевод' : 'Показать перевод'}
                       </Button>
                     </Stack>
 
                     <StudyCard
                       item={activeWordCard}
-                      reveal={wordReveal}
+                      reveal={showTranslation}
                       canSpeak={canSpeak}
                       onSpeakText={speakText}
                       isWord
@@ -1299,7 +1294,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                         disabled={wordIndex === 0}
                         onClick={() => {
                           setWordIndex((i) => Math.max(0, i - 1));
-                          setWordReveal(false);
                         }}
                       >
                         Назад
@@ -1311,7 +1305,6 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                           setWordIndex((i) =>
                             wordCards.length === 0 ? 0 : Math.min(wordCards.length - 1, i + 1)
                           );
-                          setWordReveal(false);
                         }}
                       >
                         Дальше
