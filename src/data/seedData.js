@@ -1,3 +1,11 @@
+const baseUrl = import.meta.env.BASE_URL || '/';
+
+function withBase(path) {
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
+  return normalizedBase + normalizedPath;
+}
+
 export const seedTopics = [
   {
     key: 'store',
@@ -87,23 +95,23 @@ export const seedTopics = [
 ];
 
 export const topicImageByKey = {
-  store: '/images/store.svg',
-  bazaar: '/images/bazaar.svg',
-  city: '/images/city.svg',
-  neighbors: '/images/neighbors.svg',
-  family: '/images/family.svg',
-  pharmacy: '/images/store.svg',
-  clinic: '/images/city.svg',
-  cafe: '/images/bazaar.svg',
-  housing: '/images/neighbors.svg',
-  taxi: '/images/city.svg',
-  transport: '/images/city.svg',
-  work: '/images/city.svg',
-  bank: '/images/store.svg',
-  school: '/images/family.svg',
-  repair: '/images/store.svg',
-  delivery: '/images/bazaar.svg',
-  documents: '/images/city.svg'
+  store: withBase('images/store.svg'),
+  bazaar: withBase('images/bazaar.svg'),
+  city: withBase('images/city.svg'),
+  neighbors: withBase('images/neighbors.svg'),
+  family: withBase('images/family.svg'),
+  pharmacy: withBase('images/store.svg'),
+  clinic: withBase('images/city.svg'),
+  cafe: withBase('images/bazaar.svg'),
+  housing: withBase('images/neighbors.svg'),
+  taxi: withBase('images/city.svg'),
+  transport: withBase('images/city.svg'),
+  work: withBase('images/city.svg'),
+  bank: withBase('images/store.svg'),
+  school: withBase('images/family.svg'),
+  repair: withBase('images/store.svg'),
+  delivery: withBase('images/bazaar.svg'),
+  documents: withBase('images/city.svg')
 };
 
 const baseSeedCards = [
