@@ -16,13 +16,13 @@ UzLang is a practical self-study web app for Russian-speaking learners who want 
 UzLang focuses on practical communication instead of grammar-heavy theory.
 The learning flow is simple and effective:
 
-1. Learn core words by level.
-2. Reinforce with short phrase drills.
-3. Pass tests and track progress.
+1. Learn words by fixed steps (15-20 words per step).
+2. Reinforce via step checks and pass a step test.
+3. Move to the next step only after completion.
 
 ## Features
 
-- Progressive vocabulary learning by levels
+- Progressive vocabulary learning by strict word steps
 - Phrase practice for daily city and neighborhood scenarios
 - Spaced repetition for long-term retention
 - Quiz progression with success/fail statistics

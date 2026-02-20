@@ -166,6 +166,15 @@ function createSchema(db) {
       created_at TEXT NOT NULL,
       FOREIGN KEY (word_id) REFERENCES words (id)
     );
+
+    CREATE TABLE IF NOT EXISTS word_step_quiz_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      step_index INTEGER NOT NULL,
+      score INTEGER NOT NULL,
+      total INTEGER NOT NULL,
+      is_success INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_words_unique ON words (uz, ru);
   `);
 }
@@ -288,10 +297,34 @@ export async function getDb() {
 
 export async function getTopics() {
   const db = await getDb();
-  return readRows(
+  const rows = readRows(
     db,
-    'SELECT id, topic_key AS topicKey, title, description FROM topics ORDER BY id;'
+    `SELECT t.id,
+            t.topic_key AS topicKey,
+            t.title,
+            t.description,
+            COUNT(w.id) AS totalWords,
+            SUM(CASE WHEN wp.repetitions > 0 THEN 1 ELSE 0 END) AS learnedWords
+     FROM topics t
+     LEFT JOIN words w ON w.topic_id = t.id
+     LEFT JOIN word_progress wp ON wp.word_id = w.id
+     GROUP BY t.id
+     ORDER BY t.id;`
   );
+
+  return rows.map((row) => {
+    const totalWords = Number(row.totalWords || 0);
+    const learnedWords = Number(row.learnedWords || 0);
+    return {
+      id: Number(row.id),
+      topicKey: row.topicKey,
+      title: row.title,
+      description: row.description,
+      totalWords,
+      learnedWords,
+      unlocked: totalWords === 0 || learnedWords >= totalWords
+    };
+  });
 }
 
 export async function getCardsByTopic(topicId) {
@@ -431,6 +464,22 @@ export async function getWordsByLevel(level, limit = 200) {
   );
 }
 
+export async function getWordsByStep(stepIndex, stepSize = 20) {
+  const db = await getDb();
+  const offset = Math.max(0, Number(stepIndex) || 0) * Number(stepSize);
+  return readRows(
+    db,
+    `SELECT w.id, w.level, w.uz, w.reading, w.ru, w.image_url AS imageUrl,
+            t.title AS topicTitle
+     FROM words w
+     JOIN topics t ON w.topic_id = t.id
+     ORDER BY w.id ASC
+     LIMIT ?
+     OFFSET ?;`,
+    [stepSize, offset]
+  );
+}
+
 export async function getDueWords(level, limit = 30) {
   const db = await getDb();
   const today = toDateOnly();
@@ -451,6 +500,32 @@ export async function getDueWords(level, limit = 30) {
   );
 }
 
+export async function getDueWordsByStep(stepIndex, stepSize = 20, limit = 30) {
+  const db = await getDb();
+  const today = toDateOnly();
+  const offset = Math.max(0, Number(stepIndex) || 0) * Number(stepSize);
+
+  return readRows(
+    db,
+    `SELECT w.id, w.level, w.uz, w.reading, w.ru, w.image_url AS imageUrl,
+            t.title AS topicTitle,
+            wp.next_review AS nextReview
+     FROM (
+       SELECT id, topic_id, level, uz, reading, ru, image_url
+       FROM words
+       ORDER BY id ASC
+       LIMIT ?
+       OFFSET ?
+     ) w
+     JOIN topics t ON w.topic_id = t.id
+     LEFT JOIN word_progress wp ON wp.word_id = w.id
+     WHERE wp.next_review IS NULL OR wp.next_review <= ?
+     ORDER BY COALESCE(wp.next_review, ?) ASC, w.id ASC
+     LIMIT ?;`,
+    [stepSize, offset, today, today, limit]
+  );
+}
+
 export async function getWordQuiz(level, limit = 10) {
   const db = await getDb();
   return readRows(
@@ -461,6 +536,25 @@ export async function getWordQuiz(level, limit = 10) {
      ORDER BY RANDOM()
      LIMIT ?;`,
     [level, limit]
+  );
+}
+
+export async function getWordQuizByStep(stepIndex, stepSize = 20, limit = 10) {
+  const db = await getDb();
+  const offset = Math.max(0, Number(stepIndex) || 0) * Number(stepSize);
+  return readRows(
+    db,
+    `SELECT id, level, uz, reading, ru, image_url AS imageUrl
+     FROM (
+       SELECT id, level, uz, reading, ru, image_url
+       FROM words
+       ORDER BY id ASC
+       LIMIT ?
+       OFFSET ?
+     )
+     ORDER BY RANDOM()
+     LIMIT ?;`,
+    [stepSize, offset, limit]
   );
 }
 
@@ -680,6 +774,83 @@ export async function recordWordQuizResult(level, score, total) {
   return { isSuccess: Boolean(isSuccess) };
 }
 
+export async function recordWordStepQuizResult(stepIndex, score, total) {
+  const db = await getDb();
+  const isSuccess = score === 10 && total === 10 ? 1 : 0;
+  const createdAt = new Date().toISOString();
+
+  runPrepared(
+    db,
+    `INSERT INTO word_step_quiz_results
+      (step_index, score, total, is_success, created_at)
+     VALUES (?, ?, ?, ?, ?);`,
+    [stepIndex, score, total, isSuccess, createdAt]
+  );
+
+  saveDb(db);
+  return { isSuccess: Boolean(isSuccess) };
+}
+
+export async function getStepLearningStatus(stepSize = 20) {
+  const db = await getDb();
+
+  const wordRows = readRows(
+    db,
+    `SELECT w.id, COALESCE(wp.repetitions, 0) AS repetitions
+     FROM words w
+     LEFT JOIN word_progress wp ON wp.word_id = w.id
+     ORDER BY w.id ASC;`
+  );
+
+  const quizRows = readRows(
+    db,
+    `SELECT step_index AS stepIndex, SUM(is_success) AS successCount
+     FROM word_step_quiz_results
+     GROUP BY step_index;`
+  );
+
+  const quizSuccessMap = new Map(quizRows.map((row) => [Number(row.stepIndex), Number(row.successCount || 0)]));
+  const totalWords = wordRows.length;
+  const totalSteps = Math.max(1, Math.ceil(totalWords / stepSize));
+  const steps = [];
+
+  for (let i = 0; i < totalSteps; i += 1) {
+    const start = i * stepSize;
+    const slice = wordRows.slice(start, start + stepSize);
+    const total = slice.length;
+    const learned = slice.filter((row) => Number(row.repetitions) > 0).length;
+    const mastered = slice.filter((row) => Number(row.repetitions) >= 2).length;
+    const quizSuccess = quizSuccessMap.get(i) || 0;
+    const learnedPercent = total > 0 ? Math.round((learned / total) * 100) : 0;
+    const masteredPercent = total > 0 ? Math.round((mastered / total) * 100) : 0;
+    const completed = total > 0 && learned === total && quizSuccess > 0;
+
+    steps.push({
+      stepIndex: i,
+      total,
+      learned,
+      mastered,
+      learnedPercent,
+      masteredPercent,
+      quizSuccess,
+      completed
+    });
+  }
+
+  const firstIncomplete = steps.find((step) => !step.completed);
+  const activeStepIndex = firstIncomplete ? firstIncomplete.stepIndex : Math.max(0, totalSteps - 1);
+  const completedSteps = steps.filter((step) => step.completed).length;
+
+  return {
+    stepSize: Number(stepSize),
+    totalWords,
+    totalSteps,
+    activeStepIndex,
+    completedSteps,
+    steps
+  };
+}
+
 export async function exportProgressBackup() {
   const db = await getDb();
   saveDb(db);
@@ -712,7 +883,11 @@ export async function getDailyGoalsStats() {
   const [{ perfectTestsDone }] = readRows(
     db,
     `SELECT COUNT(*) AS perfectTestsDone
-     FROM word_quiz_results
+     FROM (
+       SELECT is_success, created_at FROM word_quiz_results
+       UNION ALL
+       SELECT is_success, created_at FROM word_step_quiz_results
+     )
      WHERE is_success = 1
        AND substr(created_at, 1, 10) = ?;`,
     [today]
@@ -733,7 +908,11 @@ export async function getDailyGoalsStats() {
   const testsByDayRows = readRows(
     db,
     `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
-     FROM word_quiz_results
+     FROM (
+       SELECT is_success, created_at FROM word_quiz_results
+       UNION ALL
+       SELECT is_success, created_at FROM word_step_quiz_results
+     )
      WHERE is_success = 1
      GROUP BY day
      ORDER BY day;`
@@ -833,7 +1012,11 @@ export async function getProgressCharts(days = 14, weeks = 8) {
   const weeklyRows = readRows(
     db,
     `SELECT created_at
-     FROM word_quiz_results
+     FROM (
+       SELECT is_success, created_at FROM word_quiz_results
+       UNION ALL
+       SELECT is_success, created_at FROM word_step_quiz_results
+     )
      WHERE is_success = 1 AND substr(created_at, 1, 10) >= ?;`,
     [fromWeekDate]
   );
@@ -851,31 +1034,15 @@ export async function getProgressCharts(days = 14, weeks = 8) {
     count: weeklyMap.get(week.key) || 0
   }));
 
-  const levelRows = readRows(
-    db,
-    `SELECT w.level AS level,
-            COUNT(*) AS total,
-            SUM(CASE WHEN wp.repetitions > 0 THEN 1 ELSE 0 END) AS learned,
-            SUM(CASE WHEN wp.repetitions >= 2 THEN 1 ELSE 0 END) AS mastered
-     FROM words w
-     LEFT JOIN word_progress wp ON wp.word_id = w.id
-     GROUP BY w.level
-     ORDER BY w.level;`
-  );
-
-  const levelProgress = levelRows.map((row) => {
-    const total = Number(row.total);
-    const learned = Number(row.learned || 0);
-    const mastered = Number(row.mastered || 0);
-    return {
-      level: Number(row.level),
-      total,
-      learned,
-      mastered,
-      learnedPercent: total > 0 ? Math.round((learned / total) * 100) : 0,
-      masteredPercent: total > 0 ? Math.round((mastered / total) * 100) : 0
-    };
-  });
+  const stepStatus = await getStepLearningStatus(20);
+  const levelProgress = stepStatus.steps.map((step) => ({
+    level: step.stepIndex + 1,
+    total: step.total,
+    learned: step.learned,
+    mastered: step.mastered,
+    learnedPercent: step.learnedPercent,
+    masteredPercent: step.masteredPercent
+  }));
 
   return {
     dailyReviews,

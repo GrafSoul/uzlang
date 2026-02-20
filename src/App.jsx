@@ -15,14 +15,10 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
-  FormControl,
   Grid,
   IconButton,
-  InputLabel,
   LinearProgress,
-  MenuItem,
   Paper,
-  Select,
   Stack,
   Tab,
   Tabs,
@@ -44,15 +40,16 @@ import {
   exportProgressBackup,
   getDashboardStats,
   getDueCards,
-  getDueWords,
+  getDueWordsByStep,
   getQuizCards,
+  getStepLearningStatus,
   getTopics,
-  getWordQuiz,
+  getWordQuizByStep,
   getWordStats,
-  getWordsByLevel,
+  getWordsByStep,
   importProgressBackup,
   recordReview,
-  recordWordQuizResult,
+  recordWordStepQuizResult,
   recordWordReview
 } from './db/sqlite';
 
@@ -61,6 +58,7 @@ const AUTO_BACKUP_PREFIX = 'uzlang-auto-backup-v1-';
 const LAST_AUTO_BACKUP_DATE_KEY = 'uzlang-last-auto-backup-date-v1';
 const LAST_MANUAL_EXPORT_DATE_KEY = 'uzlang-last-manual-export-date-v1';
 const LAST_BACKUP_REMINDER_DATE_KEY = 'uzlang-last-backup-reminder-date-v1';
+const STEP_SIZE = 20;
 
 function shuffle(array) {
   const copy = [...array];
@@ -155,11 +153,11 @@ function buildPhraseQuizItem(card, type, pool) {
 }
 
 function getRank(score) {
-  if (score >= 8000) return 'Ustoz';
-  if (score >= 5000) return 'Usta';
-  if (score >= 3000) return 'Faol';
-  if (score >= 1500) return 'O‘rganuvchi';
-  return 'Boshlovchi';
+  if (score >= 50000) return 'Наставник (Ustoz)';
+  if (score >= 20000) return 'Мастер (Usta)';
+  if (score >= 8000) return 'Активный (Faol)';
+  if (score >= 2000) return 'Ученик (O‘rganuvchi)';
+  return 'Новичок (Boshlovchi)';
 }
 
 function dateDiffInDays(fromDate, toDate) {
@@ -214,6 +212,74 @@ function MiniBarChart({
             );
           })}
         </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
+function StepProgressPanel({ steps, activeStepIndex }) {
+  const activeStep = steps[activeStepIndex] || null;
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Stack spacing={1.25}>
+        <Typography variant="subtitle1">Освоение по шагам</Typography>
+        <Typography variant="caption" color="text.secondary">
+          Компактная карта шагов без числовой шкалы
+        </Typography>
+
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(34px, 1fr))',
+            gap: 0.6
+          }}
+        >
+          {steps.map((step, index) => {
+            const isActive = index === activeStepIndex;
+            const bgColor = step.completed
+              ? 'success.main'
+              : isActive
+                ? 'warning.main'
+                : step.masteredPercent >= 50
+                  ? 'info.main'
+                  : 'grey.400';
+
+            return (
+              <Tooltip
+                key={`step-cell-${index}`}
+                title={`Шаг ${index + 1}: ${step.masteredPercent}% • тест 10/10: ${
+                  step.quizSuccess > 0 ? 'да' : 'нет'
+                }`}
+              >
+                <Box
+                  sx={{
+                    height: 30,
+                    borderRadius: 1,
+                    bgcolor: bgColor,
+                    color: '#fff',
+                    display: 'grid',
+                    placeItems: 'center',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    border: isActive ? '2px solid rgba(0,0,0,0.45)' : '1px solid rgba(0,0,0,0.12)'
+                  }}
+                >
+                  {index + 1}
+                </Box>
+              </Tooltip>
+            );
+          })}
+        </Box>
+
+        {activeStep ? (
+          <Paper variant="outlined" sx={{ p: 1 }}>
+            <Typography variant="body2">
+              Текущий шаг {activeStepIndex + 1}: освоено {activeStep.masteredPercent}% • тест 10/10:{' '}
+              {activeStep.quizSuccess > 0 ? 'да' : 'нет'}
+            </Typography>
+          </Paper>
+        ) : null}
       </Stack>
     </Paper>
   );
@@ -274,7 +340,7 @@ function StudyCard({ item, reveal, canSpeak, onSpeakText, isWord = false }) {
 
           {isWord ? (
             <Typography variant="body2" color="text.secondary">
-              Уровень: {item.level} {item.topicTitle ? `• ${item.topicTitle}` : ''}
+              {item.topicTitle ? `Тема: ${item.topicTitle}` : 'Слово шага'}
             </Typography>
           ) : null}
         </Stack>
@@ -312,8 +378,16 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
   const [phraseQuizMistakes, setPhraseQuizMistakes] = useState([]);
   const [phraseMistakeReviewMode, setPhraseMistakeReviewMode] = useState(false);
 
-  const [wordLevel, setWordLevel] = useState(1);
   const [wordStats, setWordStats] = useState({ total: 0, byLevel: [] });
+  const [stepStatus, setStepStatus] = useState({
+    stepSize: STEP_SIZE,
+    totalWords: 0,
+    totalSteps: 1,
+    activeStepIndex: 0,
+    completedSteps: 0,
+    steps: []
+  });
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [dashboard, setDashboard] = useState({
     level: 1,
     words: {
@@ -370,6 +444,7 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
   const [wordQuizDone, setWordQuizDone] = useState(false);
   const [wordQuizMistakes, setWordQuizMistakes] = useState([]);
   const [wordMistakeReviewMode, setWordMistakeReviewMode] = useState(false);
+  const [wordQuizCelebration, setWordQuizCelebration] = useState(null);
 
   const canSpeak =
     typeof window !== 'undefined' &&
@@ -388,22 +463,32 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
   const activeWordCard = wordCards[wordIndex];
   const activeDueWord = dueWords[dueWordIndex];
   const activeWordQuiz = wordQuizItems[wordQuizIndex];
+  const currentStep = stepStatus.steps[activeStepIndex] || null;
+  const maxSelectableStepIndex = Math.min(
+    Math.max(0, stepStatus.totalSteps - 1),
+    stepStatus.completedSteps
+  );
 
-  const levelTotal = dashboard.words.totalLevel;
-  const levelLearned = dashboard.words.learnedLevel;
-  const levelMastered = dashboard.words.masteredLevel;
-  const levelProgress = levelTotal > 0 ? Math.round((levelLearned / levelTotal) * 100) : 0;
-  const levelMastery = levelTotal > 0 ? Math.round((levelMastered / levelTotal) * 100) : 0;
-  const levelCompleted = levelTotal > 0 && levelMastery >= 80;
+  const learnedWordsTotal = dashboard.words.learnedTotal;
+  const masteredWordsTotal = dashboard.words.masteredTotal;
+  const currentStepLearnedPercent = currentStep ? currentStep.learnedPercent : 0;
 
+  const stepQuizPassedCount = stepStatus.steps.filter((step) => step.quizSuccess > 0).length;
   const score =
-    dashboard.words.learnedTotal * 4 +
-    dashboard.words.masteredTotal * 12 +
-    dashboard.phrases.learned * 8 +
-    dashboard.phrases.mastered * 20 +
-    dashboard.quiz.success * 25;
+    stepStatus.completedSteps * 500 +
+    stepQuizPassedCount * 120 +
+    (currentStep?.learnedPercent || 0) * 4;
 
   const rank = getRank(score);
+  const earnedRewards = [
+    ...(stepStatus.completedSteps >= 1 ? ['Step 1 complete'] : []),
+    ...(stepStatus.completedSteps >= 3 ? ['Step 3 complete'] : []),
+    ...(stepStatus.completedSteps >= 7 ? ['Step 7 complete'] : []),
+    ...(stepStatus.completedSteps >= 14 ? ['Step 14 complete'] : []),
+    ...(dailyGoals.streak.current >= 3 ? ['Streak 3'] : []),
+    ...(dailyGoals.streak.current >= 7 ? ['Streak 7'] : []),
+    ...(dailyGoals.streak.current >= 14 ? ['Streak 14'] : [])
+  ];
 
   function speakText(text) {
     if (!canSpeak || !text) {
@@ -527,6 +612,21 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     setDailyGoals(data);
   }
 
+  async function refreshStepProgram(options = {}) {
+    const { preserveActiveStep = false } = options;
+    const data = await getStepLearningStatus(STEP_SIZE);
+    setStepStatus(data);
+    if (preserveActiveStep) {
+      setActiveStepIndex((prev) => {
+        const maxIndex = Math.max(0, data.totalSteps - 1);
+        return Math.min(Math.max(0, prev), maxIndex);
+      });
+    } else {
+      setActiveStepIndex(data.activeStepIndex);
+    }
+    return data;
+  }
+
   const refreshProgressCharts = useCallback(async (days = chartDays, weeks = chartWeeks) => {
     const data = await getProgressCharts(days, weeks);
     setProgressCharts(data);
@@ -536,6 +636,15 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     const items = await getDueCards(30);
     setDueCards(items);
     setReviewIndex(0);
+  }
+
+  function resolveAvailableTopicId(topicRows, currentId = null) {
+    const current = topicRows.find((topic) => topic.id === currentId);
+    if (current && current.unlocked) {
+      return current.id;
+    }
+    const firstUnlocked = topicRows.find((topic) => topic.unlocked);
+    return firstUnlocked ? firstUnlocked.id : null;
   }
 
   async function loadTopicCards(id) {
@@ -561,21 +670,22 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     setPhraseMistakeReviewMode(false);
   }
 
-  async function refreshDueWords(level) {
-    const items = await getDueWords(level, 30);
+  async function refreshDueWords(stepIndex) {
+    const items = await getDueWordsByStep(stepIndex, STEP_SIZE, 30);
     setDueWords(items);
+    setDueWordIndex(0);
+    return items;
+  }
+
+  async function restartStepReview(stepIndex) {
+    const words = await getWordsByStep(stepIndex, STEP_SIZE);
+    setDueWords(words);
     setDueWordIndex(0);
   }
 
-  async function loadWords(level) {
-    const words = await getWordsByLevel(level, 1000);
-    setWordCards(words);
-    setWordIndex(0);
-  }
-
-  async function startWordQuiz(level) {
-    const cards = await getWordQuiz(level, 10);
-    const poolRows = await getWordsByLevel(level, 1000);
+  async function startWordQuiz(stepIndex, wordsPool = null) {
+    const cards = await getWordQuizByStep(stepIndex, STEP_SIZE, 10);
+    const poolRows = wordsPool || await getWordsByStep(stepIndex, STEP_SIZE);
     const pool = poolRows.map((item) => item.ru);
     const items = cards.map((card) => ({
       ...card,
@@ -588,7 +698,32 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     setWordQuizDone(false);
     setWordQuizMistakes([]);
     setWordMistakeReviewMode(false);
+    setWordQuizCelebration(null);
   }
+
+  const syncStepSession = useCallback(async (stepIndex) => {
+    const words = await getWordsByStep(stepIndex, STEP_SIZE);
+    setWordCards(words);
+    setWordIndex(0);
+
+    const dueItems = await getDueWordsByStep(stepIndex, STEP_SIZE, 30);
+    setDueWords(dueItems);
+    setDueWordIndex(0);
+
+    const cards = await getWordQuizByStep(stepIndex, STEP_SIZE, 10);
+    const pool = words.map((item) => item.ru);
+    const items = cards.map((card) => ({
+      ...card,
+      options: buildOptions(card.ru, pool)
+    }));
+
+    setWordQuizItems(items);
+    setWordQuizIndex(0);
+    setWordQuizScore(0);
+    setWordQuizDone(false);
+    setWordQuizMistakes([]);
+    setWordMistakeReviewMode(false);
+  }, []);
 
   useEffect(() => {
     async function init() {
@@ -596,16 +731,20 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
       setTopics(topicRows);
       setWordStats(stats);
 
-      if (topicRows.length > 0) {
-        setTopicId(topicRows[0].id);
-        await loadTopicCards(topicRows[0].id);
-        await startPhraseQuiz(topicRows[0].id);
+      const firstAvailableTopicId = resolveAvailableTopicId(topicRows);
+      if (firstAvailableTopicId) {
+        setTopicId(firstAvailableTopicId);
+        await loadTopicCards(firstAvailableTopicId);
+        await startPhraseQuiz(firstAvailableTopicId);
+      } else {
+        setTopicId(null);
+        setLessonCards([]);
+        setPhraseQuizItems([]);
       }
 
       await refreshDueCards();
-      await loadWords(1);
-      await refreshDueWords(1);
-      await startWordQuiz(1);
+      const initialStep = await refreshStepProgram();
+      await syncStepSession(initialStep.activeStepIndex);
       await refreshDashboard(1);
       await refreshDailyGoals();
       const initialCharts = await getProgressCharts(14, 8);
@@ -621,15 +760,29 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
         window.speechSynthesis.cancel();
       }
     };
-  }, [canSpeak]);
+  }, [canSpeak, syncStepSession]);
 
   useEffect(() => {
     if (!topicId) {
       return;
     }
+    const selected = topics.find((topic) => topic.id === topicId);
+    if (!selected || !selected.unlocked) {
+      return;
+    }
     loadTopicCards(topicId);
     startPhraseQuiz(topicId);
-  }, [topicId]);
+  }, [topicId, topics]);
+
+  useEffect(() => {
+    if (topics.length === 0) {
+      return;
+    }
+    const nextTopicId = resolveAvailableTopicId(topics, topicId);
+    if (nextTopicId !== topicId) {
+      setTopicId(nextTopicId);
+    }
+  }, [topics, topicId]);
 
   useEffect(() => {
     if (loading) {
@@ -645,14 +798,12 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     }
 
     async function syncWords() {
-      await loadWords(wordLevel);
-      await refreshDueWords(wordLevel);
-      await startWordQuiz(wordLevel);
-      await refreshDashboard(wordLevel);
+      await syncStepSession(activeStepIndex);
+      await refreshDashboard(1);
     }
 
     syncWords();
-  }, [wordLevel, refreshProgressCharts]);
+  }, [activeStepIndex, refreshProgressCharts, syncStepSession]);
 
   async function handleReview(scoreValue) {
     if (!activeDueCard) {
@@ -665,7 +816,7 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     } else {
       await refreshDueCards();
     }
-    await refreshDashboard(wordLevel);
+    await refreshDashboard(1);
     await refreshDailyGoals();
     await refreshProgressCharts();
   }
@@ -679,11 +830,14 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     if (next < dueWords.length) {
       setDueWordIndex(next);
     } else {
-      await refreshDueWords(wordLevel);
+      await refreshDueWords(activeStepIndex);
     }
-    await refreshDashboard(wordLevel);
+    await refreshDashboard(1);
     await refreshDailyGoals();
     await refreshProgressCharts();
+    await refreshStepProgram({ preserveActiveStep: true });
+    const refreshedTopics = await getTopics();
+    setTopics(refreshedTopics);
   }
 
   function addPhraseMistake(item, userAnswer) {
@@ -785,11 +939,33 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
     setWordQuizScore(nextScore);
 
     if (isLast) {
+      const total = wordQuizItems.length || 10;
+      const previousUnlockedTopicIds = new Set(topics.filter((topic) => topic.unlocked).map((topic) => topic.id));
+
       setWordQuizDone(true);
-      await recordWordQuizResult(wordLevel, nextScore, wordQuizItems.length || 10);
-      await refreshDashboard(wordLevel);
+      await recordWordStepQuizResult(activeStepIndex, nextScore, total);
+      await refreshDashboard(1);
       await refreshDailyGoals();
       await refreshProgressCharts();
+      const nextProgram = await refreshStepProgram({ preserveActiveStep: true });
+      const refreshedTopics = await getTopics();
+      setTopics(refreshedTopics);
+
+      if (nextScore === total) {
+        const unlockedTopics = refreshedTopics.filter((topic) => topic.unlocked);
+        const newlyUnlockedTopics = unlockedTopics.filter(
+          (topic) => !previousUnlockedTopicIds.has(topic.id)
+        );
+
+        setWordQuizCelebration({
+          completedSteps: nextProgram.completedSteps,
+          newlyUnlockedTitles: newlyUnlockedTopics.map((topic) => topic.title),
+          unlockedTitles: unlockedTopics.map((topic) => topic.title)
+        });
+      } else {
+        setWordQuizCelebration(null);
+      }
+
       return;
     }
 
@@ -889,31 +1065,11 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
 
                 {mode === 'words' ? (
                   <>
-                    <FormControl
-                      size="small"
-                      sx={{ minWidth: { xs: '100%', sm: 180 }, width: { xs: '100%', sm: 'auto' } }}
-                    >
-                      <InputLabel id="level-label">Уровень слов</InputLabel>
-                      <Select
-                        labelId="level-label"
-                        value={wordLevel}
-                        label="Уровень слов"
-                        onChange={(event) => setWordLevel(Number(event.target.value))}
-                      >
-                        {wordStats.byLevel.map((item) => {
-                          const locked = item.level > dashboard.unlockedLevel;
-                          return (
-                            <MenuItem key={item.level} value={item.level} disabled={locked}>
-                              {locked
-                                ? 'Уровень ' + item.level + ' (' + item.count + ') - закрыт'
-                                : 'Уровень ' + item.level + ' (' + item.count + ')'}
-                            </MenuItem>
-                          );
-                        })}
-                      </Select>
-                    </FormControl>
-
                     <Chip label={`Слов в базе: ${wordStats.total}`} color="secondary" />
+                    <Chip
+                      label={`Шаг ${activeStepIndex + 1} / ${stepStatus.totalSteps}`}
+                      color="primary"
+                    />
                   </>
                 ) : null}
               </Stack>
@@ -972,13 +1128,25 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                       <Button
                         key={topic.id}
                         variant={topic.id === topicId ? 'contained' : 'outlined'}
-                        onClick={() => setTopicId(topic.id)}
+                        disabled={!topic.unlocked}
+                        onClick={() => {
+                          if (topic.unlocked) {
+                            setTopicId(topic.id);
+                          }
+                        }}
                         sx={{ justifyContent: 'flex-start' }}
                       >
-                        {topic.title}
+                        {topic.unlocked
+                          ? topic.title
+                          : `${topic.title} (${topic.learnedWords}/${topic.totalWords})`}
                       </Button>
                     ))}
                   </Stack>
+                  {topics.some((topic) => !topic.unlocked) ? (
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                      Тема откроется после изучения всех слов этой темы.
+                    </Typography>
+                  ) : null}
                   {selectedTopic ? (
                     <Typography color="text.secondary" sx={{ mt: 1.5 }}>
                       {selectedTopic.description}
@@ -989,17 +1157,23 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
 
               <Grid size={{ xs: 12, md: 8 }}>
                 <Paper sx={{ p: 2 }}>
-                  <Tabs
-                    value={phraseTab}
-                    onChange={(_, value) => setPhraseTab(value)}
-                    variant="fullWidth"
-                  >
-                    <Tab label="Учить" />
-                    <Tab label="Повторить" />
-                    <Tab label="Тест" />
-                  </Tabs>
+                  {!topicId ? (
+                    <Alert severity="warning" sx={{ mb: 2 }}>
+                      Пока нет доступных тем фраз. Сначала пройдите слова текущего шага.
+                    </Alert>
+                  ) : (
+                    <>
+                      <Tabs
+                        value={phraseTab}
+                        onChange={(_, value) => setPhraseTab(value)}
+                        variant="fullWidth"
+                      >
+                        <Tab label="Учить" />
+                        <Tab label="Повторить" />
+                        <Tab label="Тест" />
+                      </Tabs>
 
-                  <Box sx={{ mt: 2 }}>
+                      <Box sx={{ mt: 2 }}>
                     {phraseTab === 0 ? (
                       <Stack spacing={2}>
                         <Stack direction="row" justifyContent="space-between" alignItems="center">
@@ -1256,7 +1430,9 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                         )}
                       </Stack>
                     ) : null}
-                  </Box>
+                      </Box>
+                    </>
+                  )}
                 </Paper>
               </Grid>
             </Grid>
@@ -1271,10 +1447,41 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
               </Tabs>
 
               <Box sx={{ mt: 2 }}>
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  Задание на шаг: выучить {STEP_SIZE} слов, пройти повторы и сдать тест на 10/10.
+                  Пока шаг не закрыт, следующий не открывается.
+                </Alert>
+
                 {wordTab === 0 ? (
                   <Stack spacing={2}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      justifyContent="space-between"
+                      alignItems={{ xs: 'stretch', sm: 'center' }}
+                      spacing={1}
+                    >
                       <Chip label={`${wordIndex + 1} / ${wordCards.length || 1}`} />
+                      <TextField
+                        select
+                        size="small"
+                        value={activeStepIndex}
+                        SelectProps={{ native: true }}
+                        onChange={(event) => {
+                          const index = Number(event.target.value);
+                          setActiveStepIndex(index);
+                          setWordTab(0);
+                          setMode('words');
+                        }}
+                        sx={{ minWidth: 220, maxWidth: 280 }}
+                      >
+                        {stepStatus.steps.map((step, index) =>
+                          index <= maxSelectableStepIndex ? (
+                            <option key={`step-option-${index}`} value={index}>
+                              {`Шаг ${index + 1}${step.completed ? ' ✓' : ''}`}
+                            </option>
+                          ) : null
+                        )}
+                      </TextField>
                       <Button onClick={() => setShowTranslation((v) => !v)}>
                         {showTranslation ? 'Скрыть перевод' : 'Показать перевод'}
                       </Button>
@@ -1300,16 +1507,37 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                       </Button>
                       <Button
                         variant="contained"
-                        disabled={wordCards.length === 0}
+                        disabled={wordCards.length === 0 || wordIndex >= Math.max(0, wordCards.length - 1)}
                         onClick={() => {
-                          setWordIndex((i) =>
-                            wordCards.length === 0 ? 0 : Math.min(wordCards.length - 1, i + 1)
-                          );
+                          setWordIndex((i) => {
+                            if (wordCards.length === 0) {
+                              return 0;
+                            }
+                            return Math.min(wordCards.length - 1, i + 1);
+                          });
                         }}
                       >
                         Дальше
                       </Button>
                     </Stack>
+
+                    {wordCards.length > 0 && wordIndex >= wordCards.length - 1 ? (
+                      <Paper variant="outlined" sx={{ p: 1.5 }}>
+                        <Stack spacing={1.25}>
+                          <Typography variant="body2" color="text.secondary">
+                            Слова шага закончились. Выберите действие.
+                          </Typography>
+                          <Stack direction="row" spacing={1} flexWrap="wrap">
+                            <Button variant="outlined" onClick={() => setWordIndex(0)}>
+                              Учить заново
+                            </Button>
+                            <Button variant="contained" onClick={() => setWordTab(1)}>
+                              Перейти к повтору
+                            </Button>
+                          </Stack>
+                        </Stack>
+                      </Paper>
+                    ) : null}
                   </Stack>
                 ) : null}
 
@@ -1348,7 +1576,19 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                         </Stack>
                       </>
                     ) : (
-                      <Alert severity="success">Повторы по словам на сегодня завершены.</Alert>
+                      <>
+                        <Alert severity="info">
+                          Базовые повторы шага закрыты. Можно сразу идти в тест или повторить шаг ещё раз.
+                        </Alert>
+                        <Stack direction="row" spacing={1} flexWrap="wrap">
+                          <Button variant="outlined" onClick={() => restartStepReview(activeStepIndex)}>
+                            Повторить шаг снова
+                          </Button>
+                          <Button variant="contained" onClick={() => setWordTab(2)}>
+                            Перейти к тесту
+                          </Button>
+                        </Stack>
+                      </>
                     )}
                   </Stack>
                 ) : null}
@@ -1386,8 +1626,27 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                         <Alert severity="info">
                           Результат: {wordQuizScore} из {wordQuizItems.length}
                         </Alert>
+                        {wordQuizCelebration ? (
+                          <Alert severity="success">
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                              Поздравляем, тест сдан на 10/10.
+                            </Typography>
+                            <Typography variant="body2">
+                              Вы прошли шагов: {wordQuizCelebration.completedSteps}.
+                            </Typography>
+                            {wordQuizCelebration.newlyUnlockedTitles.length > 0 ? (
+                              <Typography variant="body2">
+                                Новые доступные темы фраз: {wordQuizCelebration.newlyUnlockedTitles.join(', ')}.
+                              </Typography>
+                            ) : (
+                              <Typography variant="body2">
+                                Доступные темы фраз: {wordQuizCelebration.unlockedTitles.join(', ')}.
+                              </Typography>
+                            )}
+                          </Alert>
+                        ) : null}
                         <Stack direction="row" spacing={1} flexWrap="wrap">
-                          <Button variant="contained" onClick={() => startWordQuiz(wordLevel)}>
+                          <Button variant="contained" onClick={() => startWordQuiz(activeStepIndex, wordCards)}>
                             Пройти ещё раз
                           </Button>
                           {wordQuizMistakes.length > 0 ? (
@@ -1434,33 +1693,38 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
             <Stack spacing={1.5}>
               <Typography variant="h6">Ваш прогресс</Typography>
               <Typography color="text.secondary">
-                Уровень {wordLevel}: выучено {levelLearned} из {levelTotal}, освоено {levelMastered}.
+                Шаг {activeStepIndex + 1} из {stepStatus.totalSteps}: изучено {currentStep?.learned || 0} из{' '}
+                {currentStep?.total || STEP_SIZE}.
               </Typography>
-              <LinearProgress variant="determinate" value={levelProgress} sx={{ height: 9, borderRadius: 10 }} />
+              <LinearProgress
+                variant="determinate"
+                value={currentStepLearnedPercent}
+                sx={{ height: 9, borderRadius: 10 }}
+              />
 
               <Grid container spacing={1}>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                   <Paper variant="outlined" sx={{ p: 1.25, height: '100%' }}>
                     <Typography variant="caption" color="text.secondary">
-                      Прогресс уровня
+                      Прогресс шага
                     </Typography>
-                    <Typography variant="h6">{levelProgress}%</Typography>
+                    <Typography variant="h6">{currentStepLearnedPercent}%</Typography>
                   </Paper>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                   <Paper variant="outlined" sx={{ p: 1.25, height: '100%' }}>
                     <Typography variant="caption" color="text.secondary">
-                      Освоение уровня
+                      Завершено шагов
                     </Typography>
-                    <Typography variant="h6">{levelMastery}%</Typography>
+                    <Typography variant="h6">{stepStatus.completedSteps} / {stepStatus.totalSteps}</Typography>
                   </Paper>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                   <Paper variant="outlined" sx={{ p: 1.25, height: '100%' }}>
                     <Typography variant="caption" color="text.secondary">
-                      Слова к повтору
+                      Слова изучено всего
                     </Typography>
-                    <Typography variant="h6">{dashboard.words.dueLevel}</Typography>
+                    <Typography variant="h6">{learnedWordsTotal}</Typography>
                   </Paper>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
@@ -1474,17 +1738,17 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                   <Paper variant="outlined" sx={{ p: 1.25, height: '100%' }}>
                     <Typography variant="caption" color="text.secondary">
-                      Тестов успешно (10/10)
+                      Тест шага 10/10
                     </Typography>
-                    <Typography variant="h6">{dashboard.quiz.success}</Typography>
+                    <Typography variant="h6">{(currentStep?.quizSuccess || 0) > 0 ? 'Да' : 'Нет'}</Typography>
                   </Paper>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
                   <Paper variant="outlined" sx={{ p: 1.25, height: '100%' }}>
                     <Typography variant="caption" color="text.secondary">
-                      Тестов неуспешно
+                      Слов освоено (2+)
                     </Typography>
-                    <Typography variant="h6">{dashboard.quiz.fail}</Typography>
+                    <Typography variant="h6">{masteredWordsTotal}</Typography>
                   </Paper>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
@@ -1505,24 +1769,58 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                 </Grid>
               </Grid>
 
-              {dashboard.quiz.success > 0 ? (
+              {(currentStep?.quizSuccess || 0) > 0 ? (
                 <Alert severity="success">
-                  Тест пройден на 10/10: {dashboard.quiz.success} раз. Следующий уровень открыт.
+                  Тест шага сдан на 10/10. После полного изучения слов шаг закроется автоматически.
                 </Alert>
               ) : (
                 <Alert severity="warning">
-                  Чтобы открыть следующий уровень, нужно хотя бы один раз сдать тест на 10/10.
+                  Для закрытия шага нужно минимум один раз сдать тест на 10/10.
                 </Alert>
               )}
 
-              {levelCompleted ? (
+              {currentStep?.completed ? (
                 <Alert severity="success">
-                  Уровень {wordLevel} пройден: освоение {levelMastery}%. Можно переходить дальше.
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    spacing={1}
+                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                    justifyContent="space-between"
+                  >
+                    <Typography variant="body2">Шаг завершен. Следующий шаг открыт.</Typography>
+                    {activeStepIndex + 1 < stepStatus.totalSteps ? (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => {
+                          setActiveStepIndex((prev) =>
+                            Math.min(stepStatus.totalSteps - 1, prev + 1)
+                          );
+                          setWordTab(0);
+                          setMode('words');
+                        }}
+                      >
+                        Перейти к следующему шагу
+                      </Button>
+                    ) : null}
+                  </Stack>
                 </Alert>
               ) : (
                 <Alert severity="info">
-                  Цель уровня: освоить 80% слов и пройти тест несколько раз подряд.
+                  Цель шага: пройти все слова шага и сдать тест 10/10.
                 </Alert>
+              )}
+
+              {earnedRewards.length > 0 ? (
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {earnedRewards.map((reward) => (
+                    <Chip key={reward} label={reward} color="success" variant="outlined" />
+                  ))}
+                </Stack>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  Награды появятся после завершения шагов и серии дней.
+                </Typography>
               )}
             </Stack>
           </Paper>
@@ -1699,18 +1997,7 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
                   />
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                  <MiniBarChart
-                    title="Освоение по уровням"
-                    subtitle="Процент mastered"
-                    data={progressCharts.levelProgress.map((item) => ({
-                      label: 'L' + item.level,
-                      value: item.masteredPercent
-                    }))}
-                    valueKey="value"
-                    labelKey="label"
-                    color="success.main"
-                    yMax={100}
-                  />
+                  <StepProgressPanel steps={stepStatus.steps} activeStepIndex={activeStepIndex} />
                 </Grid>
               </Grid>
             </Stack>
@@ -1731,19 +2018,19 @@ export default function App({ colorMode = "light", onToggleColorMode = () => {} 
         <DialogContent dividers>
           <Stack spacing={1.5}>
             <Typography>
-              1. Выбери текущий уровень слов и проходи вкладку «Учить слова» по порядку.
+              1. Проходи текущий шаг слов по порядку во вкладке «Учить слова».
             </Typography>
             <Typography>
-              2. Каждый день сначала делай «Повтор слов», потом «Тест слов».
+              2. После 20 слов переходи в «Повтор слов», затем в «Тест слов».
             </Typography>
             <Typography>
-              3. Цель уровня: освоение 80%+ и минимум один тест 10/10 для открытия следующего уровня.
+              3. Шаг закрывается только когда слова шага закреплены и тест сдан на 10/10.
             </Typography>
             <Typography>
-              4. После этого переходи в режим «Фразы»: учи и повторяй только после слов.
+              4. Пока шаг не закрыт, следующий шаг не открывается.
             </Typography>
             <Typography>
-              5. Рекомендуемый ритм: 20-30 минут в день, без пропусков длиннее 2 дней.
+              5. Рекомендуемый ритм: 20-30 минут в день, без длинных пауз.
             </Typography>
             <Typography color="text.secondary">
               Прогресс и очки сохраняются автоматически на этом устройстве.
