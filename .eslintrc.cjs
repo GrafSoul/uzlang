@@ -28,5 +28,5 @@ module.exports = {
     'react/prop-types': 'off',
     'react-refresh/only-export-components': ['warn', { allowConstantExport: true }]
   },
-  ignorePatterns: ['dist', 'node_modules']
+  ignorePatterns: ['dist', 'docs', 'node_modules']
 };
